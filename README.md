@@ -9,7 +9,7 @@ No names, domains, or event-specific details in the code — everything is confi
 ```
 site/               Static frontend (served by the Worker)
   index.html          Upload form — mobile-friendly, zero dependencies
-  admin.html          Admin dashboard — preview & download uploads
+  admin.html          Admin dashboard — preview, download & delete uploads
 
 worker/             Cloudflare Worker (API + static assets)
   src/index.ts        Handles uploads to R2, metadata to KV
@@ -20,9 +20,9 @@ Everything deploys as a **single Cloudflare Worker** — the Worker handles `/ap
 
 **Upload flow:**
 1. User fills in name, optional message, selects files
-2. Frontend calls `POST /api/create-upload` to get upload keys
+2. Frontend calls `POST /api/create-upload` to reserve upload keys (1hr TTL)
 3. Each file is `PUT` directly to the Worker, which stores it in R2
-4. Frontend calls `POST /api/complete` to finalize metadata in KV
+4. Frontend calls `POST /api/complete` to finalize metadata in KV (rate limit applied here)
 
 **Storage:**
 - **R2** — file blobs at `uploads/YYYY-MM-DD/<name-slug>/<uploadId>/<rand>-filename.ext`
@@ -123,11 +123,12 @@ Then open http://localhost:8787 for the upload page and http://localhost:8787/ad
 
 ## Security
 
-- **IP rate limiting**: Each IP can complete up to 10 upload sessions per day (configurable via `UPLOADS_PER_IP_PER_DAY`). Prevents abuse as a file dropbox.
+- **Per-visitor rate limiting**: Each browser can complete up to 10 upload sessions per day (configurable via `UPLOADS_PER_VISITOR_PER_DAY`). Uses a cookie-based visitor ID; rate limit is applied when completing an upload, not when reserving keys.
+- **Pending session verification**: Upload keys are valid for 1 hour. The Worker verifies each PUT and complete against reserved keys.
 - **Per-session file cap**: Max 20 files per upload batch.
 - **File size cap**: Max 100MB per file.
 - **Client IP logging**: Stored in upload metadata and visible in the admin dashboard for audit.
-- **Path validation**: Rejects upload keys with path traversal (`..`).
+- **Path validation**: Rejects upload keys with path traversal or invalid format.
 
 ## Environment variables
 
@@ -137,7 +138,8 @@ Then open http://localhost:8787 for the upload page and http://localhost:8787/ad
 | `EVENT_NAME` | Yes | Display name shown as page heading |
 | `INTRO_TEXT` | No | Subtitle text below the heading |
 | `EVENT_CODE` | No | Passcode users must enter to upload |
-| `UPLOADS_PER_IP_PER_DAY` | No | Max upload sessions per IP per day (default: 10) |
+| `FOOTER_TEXT` | No | Footer text below the upload form |
+| `UPLOADS_PER_VISITOR_PER_DAY` | No | Max upload sessions per visitor per day (default: 10) |
 
 ## API Routes
 
@@ -149,6 +151,7 @@ Then open http://localhost:8787 for the upload page and http://localhost:8787/ad
 | `POST` | `/api/complete` | — | Finalize upload, write KV metadata |
 | `GET` | `/api/admin/list` | `Bearer ADMIN_TOKEN` | List all uploads |
 | `GET` | `/api/admin/file/:key` | `Bearer ADMIN_TOKEN` | Stream a file from R2 |
+| `DELETE` | `/api/admin/file/:key` | `Bearer ADMIN_TOKEN` | Delete a file from R2 and metadata |
 
 ## Customizing for your event
 

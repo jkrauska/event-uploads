@@ -188,6 +188,9 @@
 
 <script>
   const API_BASE = "/api";
+  const MAX_FILES = 20;
+  const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
+  const MAX_TOTAL_SIZE = 500 * 1024 * 1024; // 500MB per batch
 
   const uploadBtn = document.getElementById("uploadBtn");
   const statusEl  = document.getElementById("status");
@@ -233,6 +236,23 @@
     if (!name) { setStatus("Please enter your name", "err"); return; }
     if (!files.length) { setStatus("Please select at least one file", "err"); return; }
 
+    if (files.length > MAX_FILES) {
+      setStatus(`Maximum ${MAX_FILES} files per upload. You selected ${files.length}.`, "err");
+      return;
+    }
+    let totalSize = 0;
+    for (const f of files) {
+      if (f.size > MAX_FILE_SIZE) {
+        setStatus(`${f.name} is too large (max ${MAX_FILE_SIZE / 1024 / 1024}MB per file).`, "err");
+        return;
+      }
+      totalSize += f.size;
+    }
+    if (totalSize > MAX_TOTAL_SIZE) {
+      setStatus(`Total size exceeds ${MAX_TOTAL_SIZE / 1024 / 1024}MB per upload.`, "err");
+      return;
+    }
+
     uploadBtn.disabled = true;
     prog.style.display = "block";
     prog.value = 0;
@@ -269,34 +289,36 @@
 
     const { uploadId, uploads } = await createResp.json();
 
-    // 2) Upload each file to R2 via the Worker
+    // 2) Upload files to R2 via the Worker (parallel, max 4 at a time)
+    const CONCURRENCY = 4;
     const total = uploads.length;
+    let completed = 0;
 
-    for (let i = 0; i < uploads.length; i++) {
-      const u    = uploads[i];
-      const file = files[i];
+    async function uploadOne(u, file) {
+      const res = await fetch(u.url, {
+        method: "PUT",
+        headers: { "content-type": file.type || "application/octet-stream" },
+        body: file
+      });
+      if (!res.ok) throw new Error(`Failed uploading ${file.name}`);
+      completed++;
+      prog.value = Math.round((completed / total) * 100);
+      setStatus(`Uploading ${file.name} (${completed}/${total})`);
+    }
 
-      setStatus(`Uploading ${file.name} (${i + 1}/${total})`);
+    const chunks = [];
+    for (let i = 0; i < uploads.length; i += CONCURRENCY) {
+      chunks.push(uploads.slice(i, i + CONCURRENCY).map((u, j) => ({ u, file: files[i + j] })));
+    }
 
-      try {
-        const res = await fetch(u.url, {
-          method: "PUT",
-          headers: { "content-type": file.type || "application/octet-stream" },
-          body: file
-        });
-
-        if (!res.ok) {
-          setStatus(`Failed uploading ${file.name}`, "err");
-          uploadBtn.disabled = false;
-          return;
-        }
-      } catch (e) {
-        setStatus(`Network error uploading ${file.name}`, "err");
-        uploadBtn.disabled = false;
-        return;
+    try {
+      for (const chunk of chunks) {
+        await Promise.all(chunk.map(({ u, file }) => uploadOne(u, file)));
       }
-
-      prog.value = Math.round(((i + 1) / total) * 100);
+    } catch (e) {
+      setStatus(e.message || "Upload failed", "err");
+      uploadBtn.disabled = false;
+      return;
     }
 
     // 3) Finalize — write metadata to KV

@@ -11,6 +11,7 @@
  *   GET  /api/config            — public event config (name, whether code is required)
  *   GET  /api/admin/list       — list all uploads (requires ADMIN_TOKEN)
  *   GET  /api/admin/file/:key+ — download a file from R2 (requires ADMIN_TOKEN)
+ *   DELETE /api/admin/file/:key+ — delete a file from R2 and KV (requires ADMIN_TOKEN)
  */
 
 export interface Env {
@@ -21,8 +22,8 @@ export interface Env {
   FOOTER_TEXT?: string;
   EVENT_CODE?: string;
   ADMIN_TOKEN?: string;
-  /** Max upload sessions per IP per day (default 10) */
-  UPLOADS_PER_IP_PER_DAY?: string;
+  /** Max upload sessions per visitor per day (default 10) */
+  UPLOADS_PER_VISITOR_PER_DAY?: string;
 }
 
 interface FileInfo {
@@ -83,7 +84,7 @@ function err(message: string, status = 400): Response {
 function cors(response: Response, origin: string): Response {
   const headers = new Headers(response.headers);
   headers.set("access-control-allow-origin", origin);
-  headers.set("access-control-allow-methods", "GET, POST, PUT, OPTIONS");
+  headers.set("access-control-allow-methods", "GET, POST, PUT, DELETE, OPTIONS");
   headers.set("access-control-allow-headers", "content-type, authorization");
   headers.set("access-control-max-age", "86400");
   return new Response(response.body, {
@@ -124,25 +125,38 @@ function getClientIP(request: Request): string {
 }
 
 // Rate limit defaults; overridable via env
-const DEFAULT_UPLOADS_PER_IP_PER_DAY = 10;
+const DEFAULT_UPLOADS_PER_VISITOR_PER_DAY = 10;
 const MAX_FILES_PER_SESSION = 20;
 const MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024; // 100MB per file
+const VISITOR_COOKIE_NAME = "eu_vid";
 
-function getUploadsPerIPLimit(env: Env): number {
-  const v = env.UPLOADS_PER_IP_PER_DAY;
-  if (!v) return DEFAULT_UPLOADS_PER_IP_PER_DAY;
+function getUploadsPerVisitorLimit(env: Env): number {
+  const v = env.UPLOADS_PER_VISITOR_PER_DAY;
+  if (!v) return DEFAULT_UPLOADS_PER_VISITOR_PER_DAY;
   const n = parseInt(v, 10);
-  return isNaN(n) || n < 1 ? DEFAULT_UPLOADS_PER_IP_PER_DAY : n;
+  return isNaN(n) || n < 1 ? DEFAULT_UPLOADS_PER_VISITOR_PER_DAY : n;
 }
 
+function getVisitorId(request: Request): string | null {
+  const cookie = request.headers.get("cookie") || "";
+  const match = cookie.match(new RegExp(`(?:^|;\\s*)${VISITOR_COOKIE_NAME}=([^;]+)`));
+  return match ? match[1] : null;
+}
+
+function makeVisitorCookie(visitorId: string): string {
+  // Cookie lasts 30 days; SameSite=Lax so it's sent on normal navigation
+  return `${VISITOR_COOKIE_NAME}=${visitorId}; Path=/; Max-Age=${60 * 60 * 24 * 30}; SameSite=Lax; Secure; HttpOnly`;
+}
+
+// Note: KV has no atomic increment; concurrent complete requests could race.
+// Acceptable for event photo sharing; use D1/Durable Objects for strict limits.
 async function checkAndIncrementRateLimit(
-  ip: string,
+  visitorId: string,
   env: Env
 ): Promise<{ allowed: boolean; count: number; limit: number }> {
-  const limit = getUploadsPerIPLimit(env);
-  if (ip === "unknown") return { allowed: true, count: 0, limit };
+  const limit = getUploadsPerVisitorLimit(env);
   const date = today();
-  const key = `ratelimit:${date}:${ip}`;
+  const key = `ratelimit:${date}:${visitorId}`;
   const raw = await env.META.get(key);
   const count = raw ? parseInt(raw, 10) : 0;
   if (count >= limit) {
@@ -157,8 +171,22 @@ async function checkAndIncrementRateLimit(
 function isValidUploadKey(key: string): boolean {
   if (!key.startsWith("uploads/")) return false;
   if (key.includes("..")) return false;
+  // Must match: uploads/YYYY-MM-DD/slug/id/rand-filename
+  const parts = key.split("/");
+  if (parts.length < 5) return false;
+  const datePart = parts[1];
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(datePart)) return false;
   return true;
 }
+
+/** Extract uploadId from R2 key: uploads/date/slug/uploadId/rand-filename */
+function parseUploadIdFromKey(key: string): string | null {
+  const parts = key.split("/");
+  if (parts.length < 5) return null;
+  return parts[3] || null;
+}
+
+const PENDING_TTL = 3600; // 1 hour
 
 // ---------------------------------------------------------------------------
 // Route handlers
@@ -197,14 +225,12 @@ async function handleCreateUpload(
     return err("Invalid event code", 403);
   }
 
-  // Rate limit: max N upload sessions per IP per day
-  const { allowed, count, limit } = await checkAndIncrementRateLimit(clientIP, env);
-  if (!allowed) {
-    console.warn(`Rate limit exceeded for IP ${clientIP} (${count}/${limit} uploads today)`);
-    return err(
-      `Upload limit reached. You can upload up to ${limit} times per day. Try again tomorrow.`,
-      429
-    );
+  // Get or create visitor ID for rate limiting (cookie-based, not IP)
+  let visitorId = getVisitorId(request);
+  let isNewVisitor = false;
+  if (!visitorId) {
+    visitorId = generateId();
+    isNewVisitor = true;
   }
 
   const uploadId = generateId();
@@ -224,8 +250,28 @@ async function handleCreateUpload(
     };
   });
 
-  console.info(`Upload created: uploadId=${uploadId} ip=${clientIP} files=${files.length}`);
-  return json({ uploadId, uploads });
+  // Store pending session (1hr TTL); rate limit happens at complete
+  const pendingKeys = uploads.map((u) => u.key);
+  await env.META.put(
+    `pending:${uploadId}`,
+    JSON.stringify({ keys: pendingKeys, date, visitorId }),
+    { expirationTtl: PENDING_TTL }
+  );
+
+  console.info(`Upload created: uploadId=${uploadId} visitor=${visitorId} ip=${clientIP} files=${files.length}`);
+
+  // Build response with visitor cookie
+  const response = json({ uploadId, uploads });
+  if (isNewVisitor) {
+    const headers = new Headers(response.headers);
+    headers.set("set-cookie", makeVisitorCookie(visitorId));
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  }
+  return response;
 }
 
 async function handleUpload(
@@ -240,15 +286,33 @@ async function handleUpload(
     return err("Invalid key", 400);
   }
 
+  // Reject empty body
   const contentLength = request.headers.get("content-length");
-  if (contentLength) {
+  if (contentLength !== null) {
     const size = parseInt(contentLength, 10);
+    if (isNaN(size) || size < 1) {
+      return err("Empty or invalid content-length", 400);
+    }
     if (size > MAX_FILE_SIZE_BYTES) {
       return err(
         `File too large. Maximum size is ${MAX_FILE_SIZE_BYTES / 1024 / 1024}MB.`,
         413
       );
     }
+  } else if (!request.body) {
+    return err("Missing request body", 400);
+  }
+
+  // Verify key belongs to a valid pending session
+  const uploadId = parseUploadIdFromKey(key);
+  if (!uploadId) return err("Invalid key format", 400);
+  const pendingRaw = await env.META.get(`pending:${uploadId}`);
+  if (!pendingRaw) {
+    return err("Upload session expired or invalid. Please start a new upload.", 410);
+  }
+  const pending = JSON.parse(pendingRaw) as { keys: string[] };
+  if (!pending.keys?.includes(key)) {
+    return err("Invalid key for this upload session", 400);
   }
 
   const contentType =
@@ -280,6 +344,39 @@ async function handleComplete(
     return err("Missing required fields");
   }
 
+  // Idempotent: if already completed, return success without re-adding to index
+  const existingMeta = await env.META.get(`upload:${uploadId}`);
+  if (existingMeta) {
+    return json({ ok: true, uploadId });
+  }
+
+  // Verify pending session exists and uploads match
+  const pendingRaw = await env.META.get(`pending:${uploadId}`);
+  if (!pendingRaw) {
+    return err("Upload session expired or invalid. Please start a new upload.", 410);
+  }
+  const pending = JSON.parse(pendingRaw) as { keys: string[]; date: string; visitorId: string };
+  const pendingKeySet = new Set(pending.keys || []);
+  const bodyKeys = uploads.map((u) => u.key);
+  if (bodyKeys.length !== pendingKeySet.size || bodyKeys.some((k) => !pendingKeySet.has(k))) {
+    return err("Uploads do not match the reserved session", 400);
+  }
+
+  // Rate limit at complete (not create) — only count successful uploads
+  const visitorId = pending.visitorId || getVisitorId(request);
+  if (visitorId) {
+    const { allowed, limit } = await checkAndIncrementRateLimit(visitorId, env);
+    if (!allowed) {
+      return err(
+        `Upload limit reached. You can upload up to ${limit} times per day. Try again tomorrow.`,
+        429
+      );
+    }
+  }
+
+  // Delete pending; upload is finalized
+  await env.META.delete(`pending:${uploadId}`);
+
   const meta: UploadMeta = {
     uploadId,
     name,
@@ -294,11 +391,10 @@ async function handleComplete(
     ...(clientIP !== "unknown" && { clientIP }),
   };
 
-  // Store in KV keyed by uploadId
   await env.META.put(`upload:${uploadId}`, JSON.stringify(meta));
 
-  // Also maintain a date-based index for listing
-  const indexKey = `index:${today()}`;
+  // Use date from pending (matches R2 path) to handle midnight edge case
+  const indexKey = `index:${pending.date}`;
   const existingRaw = await env.META.get(indexKey);
   const existing: string[] = existingRaw ? JSON.parse(existingRaw) : [];
   existing.push(uploadId);
@@ -376,11 +472,74 @@ async function handleAdminFile(
   return new Response(object.body, { headers });
 }
 
+async function handleAdminDelete(
+  request: Request,
+  env: Env,
+  key: string
+): Promise<Response> {
+  if (!checkAdmin(request, env)) {
+    return err("Unauthorized", 401);
+  }
+
+  if (!isValidUploadKey(key)) {
+    return err("Invalid key", 400);
+  }
+
+  const uploadId = parseUploadIdFromKey(key);
+  if (!uploadId) return err("Invalid key format", 400);
+
+  const metaRaw = await env.META.get(`upload:${uploadId}`);
+  if (!metaRaw) {
+    await env.MEDIA.delete(key); // Orphaned file; still delete from R2
+    return json({ ok: true, deleted: key });
+  }
+
+  const meta = JSON.parse(metaRaw) as UploadMeta;
+  const fileIndex = meta.files.findIndex((f) => f.key === key);
+  if (fileIndex === -1) {
+    await env.MEDIA.delete(key); // File not in metadata; delete from R2
+    return json({ ok: true, deleted: key });
+  }
+
+  await env.MEDIA.delete(key);
+
+  meta.files.splice(fileIndex, 1);
+
+  if (meta.files.length === 0) {
+    await env.META.delete(`upload:${uploadId}`);
+    const dateFromKey = key.split("/")[1];
+    const indexKey = `index:${dateFromKey}`;
+    const indexRaw = await env.META.get(indexKey);
+    if (indexRaw) {
+      const ids: string[] = JSON.parse(indexRaw);
+      const idx = ids.indexOf(uploadId);
+      if (idx !== -1) {
+        ids.splice(idx, 1);
+        if (ids.length > 0) {
+          await env.META.put(indexKey, JSON.stringify(ids));
+        } else {
+          await env.META.delete(indexKey);
+        }
+      }
+    }
+  } else {
+    await env.META.put(`upload:${uploadId}`, JSON.stringify(meta));
+  }
+
+  return json({ ok: true, deleted: key });
+}
+
+/** Strip accidental shell escapes like \! that can appear when setting secrets */
+function unescapeConfig(s: string | undefined): string {
+  if (!s) return "";
+  return s.replace(/\\!/g, "!");
+}
+
 function handleConfig(env: Env): Response {
   return json({
-    eventName: env.EVENT_NAME || "Event",
-    introText: env.INTRO_TEXT || "",
-    footerText: env.FOOTER_TEXT || "Made with \u2764\uFE0F by my favorite son-in-law, Joel.",
+    eventName: unescapeConfig(env.EVENT_NAME) || "Event",
+    introText: unescapeConfig(env.INTRO_TEXT),
+    footerText: unescapeConfig(env.FOOTER_TEXT) || "Made with \u2764\uFE0F by my favorite son-in-law, Joel.",
     requireCode: !!env.EVENT_CODE,
   });
 }
@@ -428,6 +587,13 @@ export default {
       } else if (method === "GET" && path.startsWith("/api/admin/file/")) {
         const key = path.slice("/api/admin/file/".length);
         response = await handleAdminFile(
+          request,
+          env,
+          decodeURIComponent(key)
+        );
+      } else if (method === "DELETE" && path.startsWith("/api/admin/file/")) {
+        const key = path.slice("/api/admin/file/".length);
+        response = await handleAdminDelete(
           request,
           env,
           decodeURIComponent(key)

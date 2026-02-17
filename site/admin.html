@@ -102,77 +102,152 @@
       font-size: 0.9rem;
     }
 
-    .file-list {
-      list-style: none;
-      padding: 0;
-    }
-
-    .file-list li {
-      padding: 0.3rem 0;
-      font-size: 0.85rem;
-      border-bottom: 1px solid #f0f0f0;
-    }
-
-    .file-list li:last-child { border-bottom: none; }
-
-    .file-row {
+    .thumbnails {
       display: flex;
-      justify-content: space-between;
-      align-items: center;
-      cursor: pointer;
-    }
-
-    .file-row:hover .file-name { text-decoration: underline; }
-
-    .file-name {
-      color: #4a90d9;
-      font-weight: 500;
-    }
-
-    .file-size {
-      color: #999;
-      font-size: 0.8rem;
-    }
-
-    .preview {
+      flex-wrap: wrap;
+      gap: 0.5rem;
       margin-top: 0.5rem;
-      margin-bottom: 0.25rem;
+    }
+
+    .thumb-item {
+      position: relative;
+      width: 100px;
+      height: 100px;
+      border-radius: 6px;
+      overflow: hidden;
+      border: 1px solid #e0e0e0;
+      background: #f9f9f9;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+
+    .thumb-item img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .thumb-item .video-badge {
+      position: absolute;
+      bottom: 4px;
+      right: 4px;
+      background: rgba(0,0,0,0.65);
+      color: #fff;
+      font-size: 0.65rem;
+      padding: 1px 5px;
+      border-radius: 3px;
+    }
+
+    .thumb-item .thumb-placeholder {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      height: 100%;
+      font-size: 0.7rem;
+      color: #999;
       text-align: center;
+      padding: 0.25rem;
     }
 
-    .preview img {
-      max-width: 100%;
-      max-height: 400px;
+    .thumb-filename {
+      font-size: 0.7rem;
+      color: #666;
+      margin-top: 2px;
+      text-align: center;
+      width: 100px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* Full-size overlay */
+    .overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.85);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .overlay img, .overlay video {
+      max-width: 90vw;
+      max-height: 80vh;
+      border-radius: 8px;
+    }
+
+    .overlay .overlay-controls {
+      display: flex;
+      gap: 0.75rem;
+      align-items: center;
+    }
+
+    .overlay .overlay-filename {
+      color: #ccc;
+      font-size: 0.9rem;
+    }
+
+    .overlay .download-btn,
+    .overlay .close-btn,
+    .overlay .delete-btn {
+      padding: 0.4rem 1rem;
+      border: none;
       border-radius: 6px;
-      border: 1px solid #e0e0e0;
+      font-size: 0.85rem;
+      cursor: pointer;
+      font-weight: 600;
     }
 
-    .preview video {
-      max-width: 100%;
-      max-height: 400px;
-      border-radius: 6px;
-      border: 1px solid #e0e0e0;
+    .overlay .download-btn {
+      background: #4a90d9;
+      color: #fff;
     }
 
-    .preview .download-btn {
-      display: inline-block;
-      margin-top: 0.4rem;
-      padding: 0.3rem 0.75rem;
+    .overlay .close-btn {
+      background: #666;
+      color: #fff;
+    }
+
+    .overlay .delete-btn {
+      background: #d9534f;
+      color: #fff;
+    }
+
+    .overlay .download-btn:hover { background: #3a7bc8; }
+    .overlay .close-btn:hover { background: #555; }
+    .overlay .delete-btn:hover { background: #c9302c; }
+
+    /* Pagination */
+    .pagination {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 0.75rem;
+      margin-top: 1.5rem;
+      margin-bottom: 1rem;
+    }
+
+    .pagination button {
+      padding: 0.4rem 1rem;
       background: #4a90d9;
       color: #fff;
       border: none;
-      border-radius: 4px;
-      font-size: 0.8rem;
+      border-radius: 6px;
+      font-size: 0.9rem;
       cursor: pointer;
-      text-decoration: none;
+      font-weight: 600;
     }
 
-    .preview .download-btn:hover { background: #3a7bc8; }
+    .pagination button:hover { background: #3a7bc8; }
+    .pagination button:disabled { background: #ccc; cursor: default; }
 
-    .preview .loading {
-      color: #999;
-      font-size: 0.85rem;
-      padding: 1rem 0;
+    .pagination .page-info {
+      font-size: 0.9rem;
+      color: #666;
     }
 
     .empty {
@@ -201,11 +276,19 @@
 
 <script>
   const API_BASE = "/api";
+  const PAGE_SIZE = 50;
 
   const tokenInput = document.getElementById("token");
   const loadBtn    = document.getElementById("loadBtn");
   const errorEl    = document.getElementById("error");
   const contentEl  = document.getElementById("content");
+
+  let allUploads = [];
+  let currentPage = 0;
+  let adminToken = "";
+
+  // Cache for blob URLs so we don't re-fetch thumbnails
+  const blobCache = {};
 
   function formatBytes(bytes) {
     if (bytes < 1024) return bytes + " B";
@@ -232,6 +315,10 @@
 
     errorEl.textContent = "";
     contentEl.innerHTML = "";
+    for (const k of Object.keys(blobCache)) {
+      URL.revokeObjectURL(blobCache[k]);
+      delete blobCache[k];
+    }
     loadBtn.textContent = "Loading\u2026";
     loadBtn.disabled = true;
 
@@ -250,84 +337,11 @@
 
       const { uploads, count } = await resp.json();
 
-      window._adminToken = token;
+      adminToken = token;
+      allUploads = uploads;
+      currentPage = 0;
 
-      const totalFiles = uploads.reduce((sum, u) => sum + u.files.length, 0);
-      const totalSize  = uploads.reduce(
-        (sum, u) => sum + u.files.reduce((s, f) => s + f.size, 0), 0
-      );
-
-      contentEl.innerHTML = "";
-
-      const summary = document.createElement("div");
-      summary.className = "summary";
-      summary.textContent = `${count} upload(s), ${totalFiles} file(s), ${formatBytes(totalSize)} total`;
-      contentEl.appendChild(summary);
-
-      if (uploads.length === 0) {
-        const empty = document.createElement("div");
-        empty.className = "empty";
-        empty.textContent = "No uploads yet.";
-        contentEl.appendChild(empty);
-      }
-
-      for (const upload of uploads) {
-        const card = document.createElement("div");
-        card.className = "upload-card";
-
-        const h3 = document.createElement("h3");
-        h3.textContent = upload.name;
-        card.appendChild(h3);
-
-        const meta = document.createElement("div");
-        meta.className = "meta";
-        let metaText = `${formatDate(upload.timestamp)} \u2022 ${upload.files.length} file(s)`;
-        if (upload.clientIP) metaText += ` \u2022 IP: ${upload.clientIP}`;
-        meta.textContent = metaText;
-        card.appendChild(meta);
-
-        if (upload.message) {
-          const msg = document.createElement("div");
-          msg.className = "msg";
-          msg.textContent = `\u201C${upload.message}\u201D`;
-          card.appendChild(msg);
-        }
-
-        const ul = document.createElement("ul");
-        ul.className = "file-list";
-
-        for (const file of upload.files) {
-          const li = document.createElement("li");
-
-          const row = document.createElement("div");
-          row.className = "file-row";
-
-          const nameSpan = document.createElement("span");
-          nameSpan.className = "file-name";
-          nameSpan.textContent = file.filename;
-
-          const sizeSpan = document.createElement("span");
-          sizeSpan.className = "file-size";
-          sizeSpan.textContent = formatBytes(file.size);
-
-          row.appendChild(nameSpan);
-          row.appendChild(sizeSpan);
-          li.appendChild(row);
-
-          // Preview container (toggled on click)
-          const previewDiv = document.createElement("div");
-          previewDiv.className = "preview";
-          previewDiv.style.display = "none";
-          li.appendChild(previewDiv);
-
-          row.onclick = () => togglePreview(file, previewDiv, token);
-
-          ul.appendChild(li);
-        }
-
-        card.appendChild(ul);
-        contentEl.appendChild(card);
-      }
+      renderPage();
 
       loadBtn.textContent = "Refresh";
       loadBtn.disabled = false;
@@ -339,55 +353,270 @@
     }
   };
 
-  async function togglePreview(file, container, token) {
-    // Toggle off if already showing
-    if (container.style.display !== "none") {
-      container.style.display = "none";
+  function renderPage() {
+    contentEl.innerHTML = "";
+
+    const totalFiles = allUploads.reduce((sum, u) => sum + u.files.length, 0);
+    const totalSize  = allUploads.reduce(
+      (sum, u) => sum + u.files.reduce((s, f) => s + f.size, 0), 0
+    );
+
+    const summary = document.createElement("div");
+    summary.className = "summary";
+    summary.textContent = `${allUploads.length} upload(s), ${totalFiles} file(s), ${formatBytes(totalSize)} total`;
+    contentEl.appendChild(summary);
+
+    if (allUploads.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "No uploads yet.";
+      contentEl.appendChild(empty);
       return;
     }
 
-    container.style.display = "block";
+    const totalPages = Math.ceil(allUploads.length / PAGE_SIZE);
+    const start = currentPage * PAGE_SIZE;
+    const end = Math.min(start + PAGE_SIZE, allUploads.length);
+    const pageUploads = allUploads.slice(start, end);
 
-    // If already loaded, just show
-    if (container.dataset.loaded) return;
+    for (const upload of pageUploads) {
+      const card = document.createElement("div");
+      card.className = "upload-card";
 
-    container.innerHTML = '<div class="loading">Loading preview\u2026</div>';
+      const h3 = document.createElement("h3");
+      h3.textContent = upload.name;
+      card.appendChild(h3);
 
-    try {
-      const resp = await fetch(`${API_BASE}/admin/file/${encodeURIComponent(file.key)}`, {
-        headers: { "Authorization": `Bearer ${token}` }
-      });
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      let metaText = `${formatDate(upload.timestamp)} \u2022 ${upload.files.length} file(s)`;
+      if (upload.clientIP) metaText += ` \u2022 IP: ${upload.clientIP}`;
+      meta.textContent = metaText;
+      card.appendChild(meta);
 
-      if (!resp.ok) {
-        container.innerHTML = '<div class="loading">Failed to load preview</div>';
+      if (upload.message) {
+        const msg = document.createElement("div");
+        msg.className = "msg";
+        msg.textContent = `\u201C${upload.message}\u201D`;
+        card.appendChild(msg);
+      }
+
+      const thumbs = document.createElement("div");
+      thumbs.className = "thumbnails";
+
+      for (const file of upload.files) {
+        const wrapper = document.createElement("div");
+        wrapper.style.display = "inline-block";
+
+        const thumbBox = document.createElement("div");
+        thumbBox.className = "thumb-item";
+        thumbBox.title = `${file.filename} (${formatBytes(file.size)})`;
+        thumbBox.onclick = () => openOverlay(file);
+
+        if (isImage(file.type)) {
+          loadThumbnail(file, thumbBox);
+        } else if (isVideo(file.type)) {
+          const placeholder = document.createElement("div");
+          placeholder.className = "thumb-placeholder";
+          placeholder.textContent = "\u25B6 Video";
+          thumbBox.appendChild(placeholder);
+
+          const badge = document.createElement("div");
+          badge.className = "video-badge";
+          badge.textContent = "\u25B6";
+          thumbBox.appendChild(badge);
+
+          // Try to load video poster frame
+          loadVideoThumb(file, thumbBox);
+        } else {
+          const placeholder = document.createElement("div");
+          placeholder.className = "thumb-placeholder";
+          placeholder.textContent = file.filename.split(".").pop().toUpperCase();
+          thumbBox.appendChild(placeholder);
+        }
+
+        wrapper.appendChild(thumbBox);
+
+        const nameLabel = document.createElement("div");
+        nameLabel.className = "thumb-filename";
+        nameLabel.textContent = file.filename;
+        wrapper.appendChild(nameLabel);
+
+        thumbs.appendChild(wrapper);
+      }
+
+      card.appendChild(thumbs);
+      contentEl.appendChild(card);
+    }
+
+    // Pagination controls
+    if (totalPages > 1) {
+      const pag = document.createElement("div");
+      pag.className = "pagination";
+
+      const prevBtn = document.createElement("button");
+      prevBtn.textContent = "\u2190 Previous";
+      prevBtn.disabled = currentPage === 0;
+      prevBtn.onclick = () => { currentPage--; renderPage(); window.scrollTo(0, 0); };
+
+      const pageInfo = document.createElement("span");
+      pageInfo.className = "page-info";
+      pageInfo.textContent = `Page ${currentPage + 1} of ${totalPages}`;
+
+      const nextBtn = document.createElement("button");
+      nextBtn.textContent = "Next \u2192";
+      nextBtn.disabled = currentPage >= totalPages - 1;
+      nextBtn.onclick = () => { currentPage++; renderPage(); window.scrollTo(0, 0); };
+
+      pag.appendChild(prevBtn);
+      pag.appendChild(pageInfo);
+      pag.appendChild(nextBtn);
+      contentEl.appendChild(pag);
+    }
+  }
+
+  async function fetchFileBlob(file) {
+    if (blobCache[file.key]) return blobCache[file.key];
+
+    const resp = await fetch(`${API_BASE}/admin/file/${encodeURIComponent(file.key)}`, {
+      headers: { "Authorization": `Bearer ${adminToken}` }
+    });
+
+    if (!resp.ok) return null;
+
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    blobCache[file.key] = url;
+    return url;
+  }
+
+  async function loadThumbnail(file, container) {
+    const placeholder = document.createElement("div");
+    placeholder.className = "thumb-placeholder";
+    placeholder.textContent = "\u2026";
+    container.appendChild(placeholder);
+
+    const url = await fetchFileBlob(file);
+    if (url) {
+      container.innerHTML = "";
+      const img = document.createElement("img");
+      img.src = url;
+      img.alt = file.filename;
+      img.loading = "lazy";
+      container.appendChild(img);
+    } else {
+      placeholder.textContent = "Error";
+    }
+  }
+
+  async function loadVideoThumb(file, container) {
+    const url = await fetchFileBlob(file);
+    if (!url) return;
+
+    // Create an off-screen video to grab a poster frame
+    const video = document.createElement("video");
+    video.src = url;
+    video.muted = true;
+    video.preload = "metadata";
+
+    video.onloadeddata = () => {
+      video.currentTime = 0.5; // grab frame at 0.5s
+    };
+
+    video.onseeked = () => {
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = 200;
+        canvas.height = 200;
+        const ctx = canvas.getContext("2d");
+
+        // Center-crop
+        const vw = video.videoWidth;
+        const vh = video.videoHeight;
+        const side = Math.min(vw, vh);
+        const sx = (vw - side) / 2;
+        const sy = (vh - side) / 2;
+
+        ctx.drawImage(video, sx, sy, side, side, 0, 0, 200, 200);
+
+        const thumbUrl = canvas.toDataURL("image/jpeg", 0.7);
+
+        container.innerHTML = "";
+        const img = document.createElement("img");
+        img.src = thumbUrl;
+        img.alt = file.filename;
+        container.appendChild(img);
+
+        const badge = document.createElement("div");
+        badge.className = "video-badge";
+        badge.textContent = "\u25B6";
+        container.appendChild(badge);
+      } catch (e) {
+        // CORS or other error — keep placeholder
+      }
+    };
+  }
+
+  function openOverlay(file) {
+    const overlay = document.createElement("div");
+    overlay.className = "overlay";
+    const onKey = (e) => {
+      if (e.key === "Escape") {
+        overlay.remove();
+        document.removeEventListener("keydown", onKey);
+      }
+    };
+    overlay.onclick = (e) => {
+      if (e.target === overlay) {
+        overlay.remove();
+        document.removeEventListener("keydown", onKey);
+      }
+    };
+
+    const loading = document.createElement("div");
+    loading.style.color = "#ccc";
+    loading.textContent = "Loading\u2026";
+    overlay.appendChild(loading);
+    document.body.appendChild(overlay);
+
+    fetchFileBlob(file).then(url => {
+      if (!url) {
+        loading.textContent = "Failed to load";
         return;
       }
 
-      const blob = await resp.blob();
-      const url = URL.createObjectURL(blob);
-
-      container.innerHTML = "";
+      overlay.innerHTML = "";
 
       if (isImage(file.type)) {
         const img = document.createElement("img");
         img.src = url;
         img.alt = file.filename;
-        container.appendChild(img);
+        overlay.appendChild(img);
       } else if (isVideo(file.type)) {
         const video = document.createElement("video");
         video.src = url;
         video.controls = true;
-        video.preload = "metadata";
-        container.appendChild(video);
+        video.autoplay = true;
+        overlay.appendChild(video);
       } else {
-        container.innerHTML = '<div class="loading">No preview available</div>';
+        const msg = document.createElement("div");
+        msg.style.color = "#ccc";
+        msg.textContent = "No preview available";
+        overlay.appendChild(msg);
       }
 
-      // Download button
-      const btn = document.createElement("button");
-      btn.className = "download-btn";
-      btn.textContent = "Download";
-      btn.onclick = (e) => {
+      const controls = document.createElement("div");
+      controls.className = "overlay-controls";
+
+      const fname = document.createElement("span");
+      fname.className = "overlay-filename";
+      fname.textContent = `${file.filename} (${formatBytes(file.size)})`;
+      controls.appendChild(fname);
+
+      const dlBtn = document.createElement("button");
+      dlBtn.className = "download-btn";
+      dlBtn.textContent = "Download";
+      dlBtn.onclick = (e) => {
         e.stopPropagation();
         const a = document.createElement("a");
         a.href = url;
@@ -396,14 +625,56 @@
         a.click();
         a.remove();
       };
-      container.appendChild(document.createElement("br"));
-      container.appendChild(btn);
+      controls.appendChild(dlBtn);
 
-      container.dataset.loaded = "true";
+      const delBtn = document.createElement("button");
+      delBtn.className = "delete-btn";
+      delBtn.textContent = "Delete";
+      delBtn.onclick = (e) => {
+        e.stopPropagation();
+        if (!confirm(`Delete "${file.filename}"? This cannot be undone.`)) return;
+        fetch(`${API_BASE}/admin/file/${encodeURIComponent(file.key)}`, {
+          method: "DELETE",
+          headers: { "Authorization": `Bearer ${adminToken}` }
+        }).then(async resp => {
+          if (!resp.ok) {
+            const data = await resp.json().catch(() => ({}));
+            alert(data.error || "Delete failed");
+            return;
+          }
+          const upload = allUploads.find(u => u.files.some(f => f.key === file.key));
+          if (upload) {
+            const idx = upload.files.findIndex(f => f.key === file.key);
+            if (idx !== -1) upload.files.splice(idx, 1);
+            if (upload.files.length === 0) {
+              allUploads.splice(allUploads.indexOf(upload), 1);
+            }
+          }
+          if (blobCache[file.key]) {
+            URL.revokeObjectURL(blobCache[file.key]);
+            delete blobCache[file.key];
+          }
+          overlay.remove();
+          document.removeEventListener("keydown", onKey);
+          renderPage();
+        }).catch(() => alert("Network error"));
+      };
+      controls.appendChild(delBtn);
 
-    } catch (e) {
-      container.innerHTML = '<div class="loading">Network error loading preview</div>';
-    }
+      const closeBtn = document.createElement("button");
+      closeBtn.className = "close-btn";
+      closeBtn.textContent = "Close";
+      closeBtn.onclick = (e) => {
+        e.stopPropagation();
+        overlay.remove();
+        document.removeEventListener("keydown", onKey);
+      };
+      controls.appendChild(closeBtn);
+
+      overlay.appendChild(controls);
+    });
+
+    document.addEventListener("keydown", onKey);
   }
 
   tokenInput.addEventListener("keydown", (e) => {
