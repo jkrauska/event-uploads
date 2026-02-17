@@ -265,7 +265,7 @@
     <div class="auth-form" id="authForm">
       <div>
         <label for="token">Admin Token</label>
-        <input type="password" id="token" placeholder="Enter admin token" />
+        <input type="password" id="token" placeholder="Enter admin or viewer token" />
       </div>
       <button id="loadBtn">Load</button>
     </div>
@@ -286,6 +286,7 @@
   let allUploads = [];
   let currentPage = 0;
   let adminToken = "";
+  let adminRole = ""; // "admin" | "viewer"
 
   // Cache for blob URLs so we don't re-fetch thumbnails
   const blobCache = {};
@@ -335,9 +336,10 @@
         return;
       }
 
-      const { uploads, count } = await resp.json();
+      const { uploads, count, role } = await resp.json();
 
       adminToken = token;
+      adminRole = role || "admin";
       allUploads = uploads;
       currentPage = 0;
 
@@ -364,6 +366,9 @@
     const summary = document.createElement("div");
     summary.className = "summary";
     summary.textContent = `${allUploads.length} upload(s), ${totalFiles} file(s), ${formatBytes(totalSize)} total`;
+    if (adminRole === "viewer") {
+      summary.textContent += " (view-only; delete disabled)";
+    }
     contentEl.appendChild(summary);
 
     if (allUploads.length === 0) {
@@ -627,39 +632,41 @@
       };
       controls.appendChild(dlBtn);
 
-      const delBtn = document.createElement("button");
-      delBtn.className = "delete-btn";
-      delBtn.textContent = "Delete";
-      delBtn.onclick = (e) => {
-        e.stopPropagation();
-        if (!confirm(`Delete "${file.filename}"? This cannot be undone.`)) return;
-        fetch(`${API_BASE}/admin/file/${encodeURIComponent(file.key)}`, {
-          method: "DELETE",
-          headers: { "Authorization": `Bearer ${adminToken}` }
-        }).then(async resp => {
-          if (!resp.ok) {
-            const data = await resp.json().catch(() => ({}));
-            alert(data.error || "Delete failed");
-            return;
-          }
-          const upload = allUploads.find(u => u.files.some(f => f.key === file.key));
-          if (upload) {
-            const idx = upload.files.findIndex(f => f.key === file.key);
-            if (idx !== -1) upload.files.splice(idx, 1);
-            if (upload.files.length === 0) {
-              allUploads.splice(allUploads.indexOf(upload), 1);
+      if (adminRole === "admin") {
+        const delBtn = document.createElement("button");
+        delBtn.className = "delete-btn";
+        delBtn.textContent = "Delete";
+        delBtn.onclick = (e) => {
+          e.stopPropagation();
+          if (!confirm(`Delete "${file.filename}"? This cannot be undone.`)) return;
+          fetch(`${API_BASE}/admin/file/${encodeURIComponent(file.key)}`, {
+            method: "DELETE",
+            headers: { "Authorization": `Bearer ${adminToken}` }
+          }).then(async resp => {
+            if (!resp.ok) {
+              const data = await resp.json().catch(() => ({}));
+              alert(data.error || "Delete failed");
+              return;
             }
-          }
-          if (blobCache[file.key]) {
-            URL.revokeObjectURL(blobCache[file.key]);
-            delete blobCache[file.key];
-          }
-          overlay.remove();
-          document.removeEventListener("keydown", onKey);
-          renderPage();
-        }).catch(() => alert("Network error"));
-      };
-      controls.appendChild(delBtn);
+            const upload = allUploads.find(u => u.files.some(f => f.key === file.key));
+            if (upload) {
+              const idx = upload.files.findIndex(f => f.key === file.key);
+              if (idx !== -1) upload.files.splice(idx, 1);
+              if (upload.files.length === 0) {
+                allUploads.splice(allUploads.indexOf(upload), 1);
+              }
+            }
+            if (blobCache[file.key]) {
+              URL.revokeObjectURL(blobCache[file.key]);
+              delete blobCache[file.key];
+            }
+            overlay.remove();
+            document.removeEventListener("keydown", onKey);
+            renderPage();
+          }).catch(() => alert("Network error"));
+        };
+        controls.appendChild(delBtn);
+      }
 
       const closeBtn = document.createElement("button");
       closeBtn.className = "close-btn";

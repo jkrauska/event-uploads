@@ -80,8 +80,11 @@ https://event-uploads.<your-subdomain>.workers.dev
 Now that the Worker exists, set secrets via the Cloudflare dashboard (**Workers & Pages > your worker > Settings > Variables**) or via Wrangler:
 
 ```bash
-# Required — admin API access token
+# Required — admin API access token (full control)
 wrangler secret put ADMIN_TOKEN
+
+# Optional — read-only viewer token (same view, delete disabled)
+wrangler secret put VIEWER_TOKEN
 
 # Required — event display name (shown as page heading)
 wrangler secret put EVENT_NAME
@@ -134,7 +137,8 @@ Then open http://localhost:8787 for the upload page and http://localhost:8787/ad
 
 | Variable | Required | Description |
 |---|---|---|
-| `ADMIN_TOKEN` | Yes | Bearer token for admin API access |
+| `ADMIN_TOKEN` | Yes | Bearer token for admin API access (full control) |
+| `VIEWER_TOKEN` | No | Bearer token for read-only admin view; delete disabled |
 | `EVENT_NAME` | Yes | Display name shown as page heading |
 | `INTRO_TEXT` | No | Subtitle text below the heading |
 | `EVENT_CODE` | No | Passcode users must enter to upload |
@@ -149,8 +153,8 @@ Then open http://localhost:8787 for the upload page and http://localhost:8787/ad
 | `POST` | `/api/create-upload` | Event code (if set) | Reserve upload, get keys |
 | `PUT` | `/api/upload/:key` | — | Upload a single file to R2 |
 | `POST` | `/api/complete` | — | Finalize upload, write KV metadata |
-| `GET` | `/api/admin/list` | `Bearer ADMIN_TOKEN` | List all uploads |
-| `GET` | `/api/admin/file/:key` | `Bearer ADMIN_TOKEN` | Stream a file from R2 |
+| `GET` | `/api/admin/list` | `Bearer ADMIN_TOKEN` or `VIEWER_TOKEN` | List all uploads |
+| `GET` | `/api/admin/file/:key` | `Bearer ADMIN_TOKEN` or `VIEWER_TOKEN` | Stream a file from R2 |
 | `DELETE` | `/api/admin/file/:key` | `Bearer ADMIN_TOKEN` | Delete a file from R2 and metadata |
 
 ## Customizing for your event

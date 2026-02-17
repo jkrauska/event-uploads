@@ -25,5 +25,6 @@ id = "REPLACE_WITH_KV_NAMESPACE_ID"
 
 # For local dev, create a .dev.vars file:
 #   ADMIN_TOKEN=supersecret
+#   VIEWER_TOKEN=readonly123   # Optional — same view as admin, delete disabled
 #   EVENT_NAME="My Event"
 #   INTRO_TEXT="Upload your photos!"

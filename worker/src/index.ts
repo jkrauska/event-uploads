@@ -22,6 +22,8 @@ export interface Env {
   FOOTER_TEXT?: string;
   EVENT_CODE?: string;
   ADMIN_TOKEN?: string;
+  /** Read-only token for admin view; delete disabled */
+  VIEWER_TOKEN?: string;
   /** Max upload sessions per visitor per day (default 10) */
   UPLOADS_PER_VISITOR_PER_DAY?: string;
 }
@@ -407,7 +409,8 @@ async function handleAdminList(
   request: Request,
   env: Env
 ): Promise<Response> {
-  if (!checkAdmin(request, env)) {
+  const role = getAdminRole(request, env);
+  if (!role) {
     return err("Unauthorized", 401);
   }
 
@@ -445,7 +448,7 @@ async function handleAdminList(
       new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
   );
 
-  return json({ uploads, count: uploads.length });
+  return json({ uploads, count: uploads.length, role });
 }
 
 async function handleAdminFile(
@@ -453,7 +456,7 @@ async function handleAdminFile(
   env: Env,
   key: string
 ): Promise<Response> {
-  if (!checkAdmin(request, env)) {
+  if (!checkAdminOrViewer(request, env)) {
     return err("Unauthorized", 401);
   }
 
@@ -544,10 +547,23 @@ function handleConfig(env: Env): Response {
   });
 }
 
-function checkAdmin(request: Request, env: Env): boolean {
-  if (!env.ADMIN_TOKEN) return false;
+type AdminRole = "admin" | "viewer";
+
+function getAdminRole(request: Request, env: Env): AdminRole | null {
   const auth = request.headers.get("authorization") || "";
-  return auth === `Bearer ${env.ADMIN_TOKEN}`;
+  if (!auth.startsWith("Bearer ")) return null;
+  const token = auth.slice(7);
+  if (env.ADMIN_TOKEN && token === env.ADMIN_TOKEN) return "admin";
+  if (env.VIEWER_TOKEN && token === env.VIEWER_TOKEN) return "viewer";
+  return null;
+}
+
+function checkAdmin(request: Request, env: Env): boolean {
+  return getAdminRole(request, env) === "admin";
+}
+
+function checkAdminOrViewer(request: Request, env: Env): boolean {
+  return getAdminRole(request, env) !== null;
 }
 
 // ---------------------------------------------------------------------------
