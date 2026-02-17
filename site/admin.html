@@ -175,8 +175,6 @@
     }
 
     .overlay img, .overlay video {
-      max-width: 90vw;
-      max-height: 80vh;
       border-radius: 8px;
     }
 
@@ -220,6 +218,79 @@
     .overlay .download-btn:hover { background: #3a7bc8; }
     .overlay .close-btn:hover { background: #555; }
     .overlay .delete-btn:hover { background: #c9302c; }
+
+    /* Overlay nav arrows */
+    .overlay .nav-arrows {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      pointer-events: none;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 0.5rem;
+    }
+
+    .overlay .nav-arrow {
+      pointer-events: auto;
+      width: 44px;
+      height: 44px;
+      min-width: 44px;
+      min-height: 44px;
+      border: none;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.2);
+      color: #fff;
+      font-size: 1.5rem;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s;
+    }
+
+    .overlay .nav-arrow:hover:not(:disabled) {
+      background: rgba(255,255,255,0.35);
+    }
+
+    .overlay .nav-arrow:disabled {
+      opacity: 0.35;
+      cursor: default;
+    }
+
+    .overlay .overlay-media-wrap {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex: 1;
+      min-height: 0;
+      width: 100%;
+    }
+
+    .overlay .overlay-media-wrap img,
+    .overlay .overlay-media-wrap video {
+      max-width: 90vw;
+      max-height: 75vh;
+      border-radius: 8px;
+    }
+
+    .overlay .slideshow-btn {
+      padding: 0.4rem 1rem;
+      border: none;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      cursor: pointer;
+      font-weight: 600;
+      background: #2d7d4a;
+      color: #fff;
+    }
+
+    .overlay .slideshow-btn:hover { background: #247040; }
+    .overlay .slideshow-btn.active { background: #c9302c; }
+    .overlay .slideshow-btn.active:hover { background: #a52824; }
 
     /* Pagination */
     .pagination {
@@ -287,6 +358,8 @@
   let currentPage = 0;
   let adminToken = "";
   let adminRole = ""; // "admin" | "viewer"
+  /** Flat list of media files for the current page (for overlay prev/next) */
+  let currentPageMediaList = [];
 
   // Cache for blob URLs so we don't re-fetch thumbnails
   const blobCache = {};
@@ -383,6 +456,7 @@
     const start = currentPage * PAGE_SIZE;
     const end = Math.min(start + PAGE_SIZE, allUploads.length);
     const pageUploads = allUploads.slice(start, end);
+    currentPageMediaList = pageUploads.flatMap(u => u.files);
 
     for (const upload of pageUploads) {
       const card = document.createElement("div");
@@ -416,7 +490,10 @@
         const thumbBox = document.createElement("div");
         thumbBox.className = "thumb-item";
         thumbBox.title = `${file.filename} (${formatBytes(file.size)})`;
-        thumbBox.onclick = () => openOverlay(file);
+        thumbBox.onclick = () => {
+          const idx = currentPageMediaList.findIndex(f => f.key === file.key);
+          openOverlay(file, currentPageMediaList, idx);
+        };
 
         if (isImage(file.type)) {
           loadThumbnail(file, thumbBox);
@@ -562,126 +639,248 @@
     };
   }
 
-  function openOverlay(file) {
+  const SLIDESHOW_INTERVAL_MS = 4000;
+
+  function openOverlay(initialFile, mediaList, initialIndex) {
+    const list = mediaList && mediaList.length ? mediaList : [initialFile];
+    const index = initialIndex >= 0 && initialIndex < list.length ? initialIndex : 0;
+
     const overlay = document.createElement("div");
     overlay.className = "overlay";
+    overlay._mediaList = list;
+    overlay._currentIndex = index;
+    overlay._currentFile = null;
+    overlay._currentUrl = null;
+    overlay._slideshowTimer = null;
+
+    const closeOverlay = () => {
+      if (overlay._slideshowTimer) clearInterval(overlay._slideshowTimer);
+      overlay.remove();
+      document.removeEventListener("keydown", onKey);
+    };
+
     const onKey = (e) => {
-      if (e.key === "Escape") {
-        overlay.remove();
-        document.removeEventListener("keydown", onKey);
-      }
+      if (e.key === "Escape") closeOverlay();
+      else if (e.key === "ArrowLeft") goPrev();
+      else if (e.key === "ArrowRight") goNext();
     };
+
     overlay.onclick = (e) => {
-      if (e.target === overlay) {
-        overlay.remove();
-        document.removeEventListener("keydown", onKey);
-      }
+      if (e.target === overlay) closeOverlay();
     };
+
+    const mediaWrap = document.createElement("div");
+    mediaWrap.className = "overlay-media-wrap";
+
+    const navArrows = document.createElement("div");
+    navArrows.className = "nav-arrows";
+
+    const prevBtn = document.createElement("button");
+    prevBtn.className = "nav-arrow";
+    prevBtn.type = "button";
+    prevBtn.innerHTML = "&#10094;";
+    prevBtn.title = "Previous";
+    prevBtn.addEventListener("click", (e) => { e.stopPropagation(); goPrev(); });
+
+    const nextBtn = document.createElement("button");
+    nextBtn.className = "nav-arrow";
+    nextBtn.type = "button";
+    nextBtn.innerHTML = "&#10095;";
+    nextBtn.title = "Next";
+    nextBtn.addEventListener("click", (e) => { e.stopPropagation(); goNext(); });
+
+    navArrows.appendChild(prevBtn);
+    navArrows.appendChild(nextBtn);
+    mediaWrap.appendChild(navArrows);
 
     const loading = document.createElement("div");
+    loading.className = "overlay-loading";
     loading.style.color = "#ccc";
     loading.textContent = "Loading\u2026";
-    overlay.appendChild(loading);
-    document.body.appendChild(overlay);
+    mediaWrap.appendChild(loading);
 
-    fetchFileBlob(file).then(url => {
-      if (!url) {
-        loading.textContent = "Failed to load";
-        return;
-      }
+    overlay.appendChild(mediaWrap);
 
-      overlay.innerHTML = "";
+    const controls = document.createElement("div");
+    controls.className = "overlay-controls";
 
-      if (isImage(file.type)) {
-        const img = document.createElement("img");
-        img.src = url;
-        img.alt = file.filename;
-        overlay.appendChild(img);
-      } else if (isVideo(file.type)) {
-        const video = document.createElement("video");
-        video.src = url;
-        video.controls = true;
-        video.autoplay = true;
-        overlay.appendChild(video);
+    const fname = document.createElement("span");
+    fname.className = "overlay-filename";
+    controls.appendChild(fname);
+
+    const dlBtn = document.createElement("button");
+    dlBtn.className = "download-btn";
+    dlBtn.textContent = "Download";
+    dlBtn.onclick = (e) => {
+      e.stopPropagation();
+      const url = overlay._currentUrl;
+      const file = overlay._currentFile;
+      if (!url || !file) return;
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = file.filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    };
+    controls.appendChild(dlBtn);
+
+    const slideshowBtn = document.createElement("button");
+    slideshowBtn.className = "slideshow-btn";
+    slideshowBtn.textContent = "Slideshow";
+    slideshowBtn.title = "Start / stop slideshow";
+    slideshowBtn.onclick = (e) => {
+      e.stopPropagation();
+      if (overlay._slideshowTimer) {
+        clearInterval(overlay._slideshowTimer);
+        overlay._slideshowTimer = null;
+        slideshowBtn.textContent = "Slideshow";
+        slideshowBtn.classList.remove("active");
       } else {
-        const msg = document.createElement("div");
-        msg.style.color = "#ccc";
-        msg.textContent = "No preview available";
-        overlay.appendChild(msg);
-      }
-
-      const controls = document.createElement("div");
-      controls.className = "overlay-controls";
-
-      const fname = document.createElement("span");
-      fname.className = "overlay-filename";
-      fname.textContent = `${file.filename} (${formatBytes(file.size)})`;
-      controls.appendChild(fname);
-
-      const dlBtn = document.createElement("button");
-      dlBtn.className = "download-btn";
-      dlBtn.textContent = "Download";
-      dlBtn.onclick = (e) => {
-        e.stopPropagation();
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = file.filename;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-      };
-      controls.appendChild(dlBtn);
-
-      if (adminRole === "admin") {
-        const delBtn = document.createElement("button");
-        delBtn.className = "delete-btn";
-        delBtn.textContent = "Delete";
-        delBtn.onclick = (e) => {
-          e.stopPropagation();
-          if (!confirm(`Delete "${file.filename}"? This cannot be undone.`)) return;
-          fetch(`${API_BASE}/admin/file/${encodeURIComponent(file.key)}`, {
-            method: "DELETE",
-            headers: { "Authorization": `Bearer ${adminToken}` }
-          }).then(async resp => {
-            if (!resp.ok) {
-              const data = await resp.json().catch(() => ({}));
-              alert(data.error || "Delete failed");
-              return;
-            }
-            const upload = allUploads.find(u => u.files.some(f => f.key === file.key));
-            if (upload) {
-              const idx = upload.files.findIndex(f => f.key === file.key);
-              if (idx !== -1) upload.files.splice(idx, 1);
-              if (upload.files.length === 0) {
-                allUploads.splice(allUploads.indexOf(upload), 1);
-              }
-            }
-            if (blobCache[file.key]) {
-              URL.revokeObjectURL(blobCache[file.key]);
-              delete blobCache[file.key];
-            }
-            overlay.remove();
-            document.removeEventListener("keydown", onKey);
-            renderPage();
-          }).catch(() => alert("Network error"));
+        slideshowBtn.textContent = "Stop slideshow";
+        slideshowBtn.classList.add("active");
+        const advance = () => {
+          if (overlay._currentIndex < overlay._mediaList.length - 1) goNext();
+          else {
+            clearInterval(overlay._slideshowTimer);
+            overlay._slideshowTimer = null;
+            slideshowBtn.textContent = "Slideshow";
+            slideshowBtn.classList.remove("active");
+          }
         };
-        controls.appendChild(delBtn);
+        overlay._slideshowTimer = setInterval(advance, SLIDESHOW_INTERVAL_MS);
       }
+    };
+    controls.appendChild(slideshowBtn);
 
-      const closeBtn = document.createElement("button");
-      closeBtn.className = "close-btn";
-      closeBtn.textContent = "Close";
-      closeBtn.onclick = (e) => {
+    if (adminRole === "admin") {
+      const delBtn = document.createElement("button");
+      delBtn.className = "delete-btn";
+      delBtn.textContent = "Delete";
+      delBtn.onclick = (e) => {
         e.stopPropagation();
-        overlay.remove();
-        document.removeEventListener("keydown", onKey);
+        const file = overlay._currentFile;
+        if (!file || !confirm(`Delete "${file.filename}"? This cannot be undone.`)) return;
+        fetch(`${API_BASE}/admin/file/${encodeURIComponent(file.key)}`, {
+          method: "DELETE",
+          headers: { "Authorization": `Bearer ${adminToken}` }
+        }).then(async resp => {
+          if (!resp.ok) {
+            const data = await resp.json().catch(() => ({}));
+            alert(data.error || "Delete failed");
+            return;
+          }
+          const upload = allUploads.find(u => u.files.some(f => f.key === file.key));
+          if (upload) {
+            const idx = upload.files.findIndex(f => f.key === file.key);
+            if (idx !== -1) upload.files.splice(idx, 1);
+            if (upload.files.length === 0) {
+              allUploads.splice(allUploads.indexOf(upload), 1);
+            }
+          }
+          if (blobCache[file.key]) {
+            URL.revokeObjectURL(blobCache[file.key]);
+            delete blobCache[file.key];
+          }
+          closeOverlay();
+          renderPage();
+        }).catch(() => alert("Network error"));
       };
-      controls.appendChild(closeBtn);
+      controls.appendChild(delBtn);
+    }
 
-      overlay.appendChild(controls);
-    });
+    const closeBtn = document.createElement("button");
+    closeBtn.className = "close-btn";
+    closeBtn.textContent = "Close";
+    closeBtn.onclick = (e) => {
+      e.stopPropagation();
+      closeOverlay();
+    };
+    controls.appendChild(closeBtn);
 
+    overlay.appendChild(controls);
+    document.body.appendChild(overlay);
     document.addEventListener("keydown", onKey);
+
+    function goPrev() {
+      if (overlay._currentIndex <= 0) return;
+      showMediaAt(overlay._currentIndex - 1);
+    }
+
+    function goNext() {
+      if (overlay._currentIndex >= overlay._mediaList.length - 1) return;
+      showMediaAt(overlay._currentIndex + 1);
+    }
+
+    function showMediaAt(i) {
+      overlay._currentIndex = i;
+      const file = overlay._mediaList[i];
+      prevBtn.disabled = i <= 0;
+      nextBtn.disabled = i >= overlay._mediaList.length - 1;
+
+      // Remove current media node (keep nav arrows)
+      const wrap = overlay.querySelector(".overlay-media-wrap");
+      const oldMedia = wrap.querySelector("img, video, .overlay-no-preview");
+      if (oldMedia) oldMedia.remove();
+      const oldLoading = wrap.querySelector(".overlay-loading");
+      if (oldLoading) oldLoading.remove();
+
+      const loadingEl = document.createElement("div");
+      loadingEl.className = "overlay-loading";
+      loadingEl.style.color = "#ccc";
+      loadingEl.textContent = "Loading\u2026";
+      wrap.appendChild(loadingEl);
+
+      fetchFileBlob(file).then(url => {
+        if (loadingEl.parentNode) loadingEl.remove();
+        if (!url) {
+          const msg = document.createElement("div");
+          msg.className = "overlay-no-preview";
+          msg.style.color = "#ccc";
+          msg.textContent = "Failed to load";
+          wrap.appendChild(msg);
+          overlay._currentFile = file;
+          overlay._currentUrl = null;
+        } else {
+          overlay._currentFile = file;
+          overlay._currentUrl = url;
+          if (isImage(file.type)) {
+            const img = document.createElement("img");
+            img.src = url;
+            img.alt = file.filename;
+            wrap.appendChild(img);
+          } else if (isVideo(file.type)) {
+            const video = document.createElement("video");
+            video.src = url;
+            video.controls = true;
+            video.autoplay = true;
+            wrap.appendChild(video);
+          } else {
+            const msg = document.createElement("div");
+            msg.className = "overlay-no-preview";
+            msg.style.color = "#ccc";
+            msg.textContent = "No preview available";
+            wrap.appendChild(msg);
+          }
+        }
+        fname.textContent = `${file.filename} (${formatBytes(file.size)})`;
+      });
+    }
+
+    // Swipe handling
+    let touchStartX = 0;
+    mediaWrap.addEventListener("touchstart", (e) => {
+      touchStartX = e.changedTouches[0].clientX;
+    }, { passive: true });
+    mediaWrap.addEventListener("touchend", (e) => {
+      const touchEndX = e.changedTouches[0].clientX;
+      const dx = touchStartX - touchEndX;
+      const minSwipe = 50;
+      if (dx > minSwipe) goNext();
+      else if (dx < -minSwipe) goPrev();
+    }, { passive: true });
+
+    showMediaAt(index);
   }
 
   tokenInput.addEventListener("keydown", (e) => {

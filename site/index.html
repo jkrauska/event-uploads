@@ -75,6 +75,14 @@
       margin-bottom: 1rem;
     }
 
+    .file-input-wrapper.drag-over {
+      border: 2px dashed #4a90d9;
+      border-radius: 8px;
+      background: rgba(74, 144, 217, 0.05);
+      margin: -2px;
+      padding: 0.5rem;
+    }
+
     input[type="file"] {
       width: 100%;
       padding: 0.5rem;
@@ -86,6 +94,12 @@
 
     input[type="file"]:hover {
       border-color: #4a90d9;
+    }
+
+    .drop-hint {
+      font-size: 0.85rem;
+      color: #999;
+      margin-top: 0.25rem;
     }
 
     .code-group {
@@ -172,9 +186,10 @@
       <input type="text" id="code" placeholder="Enter event code" autocomplete="off" />
     </div>
 
-    <div class="file-input-wrapper">
+    <div class="file-input-wrapper" id="dropZone">
       <label for="files">Files</label>
       <input type="file" id="files" multiple accept="image/*,video/*" />
+      <p class="drop-hint">or drag photos and videos here</p>
     </div>
 
     <button id="uploadBtn">Upload</button>
@@ -196,6 +211,43 @@
   const statusEl  = document.getElementById("status");
   const detailEl  = document.getElementById("detail");
   const prog      = document.getElementById("prog");
+  const dropZone  = document.getElementById("dropZone");
+  const filesInput = document.getElementById("files");
+
+  function isAcceptedFile(file) {
+    const t = (file.type || "").toLowerCase();
+    return t.startsWith("image/") || t.startsWith("video/");
+  }
+
+  function addFilesToInput(newFiles) {
+    const existing = Array.from(filesInput.files || []);
+    const accepted = Array.from(newFiles).filter(isAcceptedFile);
+    const combined = [...existing, ...accepted].slice(0, MAX_FILES);
+    const dt = new DataTransfer();
+    combined.forEach(f => dt.items.add(f));
+    filesInput.files = dt.files;
+  }
+
+  ["dragenter", "dragover"].forEach(ev => {
+    dropZone.addEventListener(ev, (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dropZone.classList.add("drag-over");
+    });
+  });
+  ["dragleave", "drop"].forEach(ev => {
+    dropZone.addEventListener(ev, (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dropZone.classList.remove("drag-over");
+    });
+  });
+  dropZone.addEventListener("drop", (e) => {
+    const files = e.dataTransfer?.files;
+    if (files?.length) {
+      addFilesToInput(files);
+    }
+  });
 
   // Fetch event config from Worker and populate page
   (async () => {
@@ -230,7 +282,6 @@
     const name    = document.getElementById("name").value.trim();
     const message = document.getElementById("message").value.trim();
     const code    = document.getElementById("code").value.trim();
-    const filesInput = document.getElementById("files");
     const files   = Array.from(filesInput.files || []);
 
     if (!name) { setStatus("Please enter your name", "err"); return; }
