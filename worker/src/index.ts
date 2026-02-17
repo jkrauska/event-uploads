@@ -21,6 +21,8 @@ export interface Env {
   FOOTER_TEXT?: string;
   EVENT_CODE?: string;
   ADMIN_TOKEN?: string;
+  /** Max upload sessions per IP per day (default 10) */
+  UPLOADS_PER_IP_PER_DAY?: string;
 }
 
 interface FileInfo {
@@ -60,6 +62,7 @@ interface UploadMeta {
     size: number;
   }[];
   timestamp: string;
+  clientIP?: string; // For audit; only stored if available
 }
 
 // ---------------------------------------------------------------------------
@@ -112,6 +115,51 @@ function today(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+function getClientIP(request: Request): string {
+  return (
+    request.headers.get("CF-Connecting-IP") ||
+    request.headers.get("X-Forwarded-For")?.split(",")[0]?.trim() ||
+    "unknown"
+  );
+}
+
+// Rate limit defaults; overridable via env
+const DEFAULT_UPLOADS_PER_IP_PER_DAY = 10;
+const MAX_FILES_PER_SESSION = 20;
+const MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024; // 100MB per file
+
+function getUploadsPerIPLimit(env: Env): number {
+  const v = env.UPLOADS_PER_IP_PER_DAY;
+  if (!v) return DEFAULT_UPLOADS_PER_IP_PER_DAY;
+  const n = parseInt(v, 10);
+  return isNaN(n) || n < 1 ? DEFAULT_UPLOADS_PER_IP_PER_DAY : n;
+}
+
+async function checkAndIncrementRateLimit(
+  ip: string,
+  env: Env
+): Promise<{ allowed: boolean; count: number; limit: number }> {
+  const limit = getUploadsPerIPLimit(env);
+  if (ip === "unknown") return { allowed: true, count: 0, limit };
+  const date = today();
+  const key = `ratelimit:${date}:${ip}`;
+  const raw = await env.META.get(key);
+  const count = raw ? parseInt(raw, 10) : 0;
+  if (count >= limit) {
+    return { allowed: false, count, limit };
+  }
+  await env.META.put(key, String(count + 1), {
+    expirationTtl: 86400 * 2, // 2 days — KV will auto-expire stale keys
+  });
+  return { allowed: true, count: count + 1, limit };
+}
+
+function isValidUploadKey(key: string): boolean {
+  if (!key.startsWith("uploads/")) return false;
+  if (key.includes("..")) return false;
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Route handlers
 // ---------------------------------------------------------------------------
@@ -120,6 +168,8 @@ async function handleCreateUpload(
   request: Request,
   env: Env
 ): Promise<Response> {
+  const clientIP = getClientIP(request);
+
   let body: CreateUploadRequest;
   try {
     body = await request.json();
@@ -135,10 +185,26 @@ async function handleCreateUpload(
   if (!files || !Array.isArray(files) || files.length === 0) {
     return err("files array is required");
   }
+  if (files.length > MAX_FILES_PER_SESSION) {
+    return err(
+      `Maximum ${MAX_FILES_PER_SESSION} files per upload. You selected ${files.length}.`,
+      400
+    );
+  }
 
-  // Check event code if configured
+  // Check event code first (don't burn rate limit on wrong code)
   if (env.EVENT_CODE && code !== env.EVENT_CODE) {
     return err("Invalid event code", 403);
+  }
+
+  // Rate limit: max N upload sessions per IP per day
+  const { allowed, count, limit } = await checkAndIncrementRateLimit(clientIP, env);
+  if (!allowed) {
+    console.warn(`Rate limit exceeded for IP ${clientIP} (${count}/${limit} uploads today)`);
+    return err(
+      `Upload limit reached. You can upload up to ${limit} times per day. Try again tomorrow.`,
+      429
+    );
   }
 
   const uploadId = generateId();
@@ -158,6 +224,7 @@ async function handleCreateUpload(
     };
   });
 
+  console.info(`Upload created: uploadId=${uploadId} ip=${clientIP} files=${files.length}`);
   return json({ uploadId, uploads });
 }
 
@@ -166,8 +233,22 @@ async function handleUpload(
   env: Env,
   key: string
 ): Promise<Response> {
-  if (!key.startsWith("uploads/")) {
+  const clientIP = getClientIP(request);
+
+  if (!isValidUploadKey(key)) {
+    console.warn(`Invalid upload key rejected from IP ${clientIP}: ${key}`);
     return err("Invalid key", 400);
+  }
+
+  const contentLength = request.headers.get("content-length");
+  if (contentLength) {
+    const size = parseInt(contentLength, 10);
+    if (size > MAX_FILE_SIZE_BYTES) {
+      return err(
+        `File too large. Maximum size is ${MAX_FILE_SIZE_BYTES / 1024 / 1024}MB.`,
+        413
+      );
+    }
   }
 
   const contentType =
@@ -184,6 +265,8 @@ async function handleComplete(
   request: Request,
   env: Env
 ): Promise<Response> {
+  const clientIP = getClientIP(request);
+
   let body: CompleteRequest;
   try {
     body = await request.json();
@@ -208,6 +291,7 @@ async function handleComplete(
       size: u.size,
     })),
     timestamp: new Date().toISOString(),
+    ...(clientIP !== "unknown" && { clientIP }),
   };
 
   // Store in KV keyed by uploadId

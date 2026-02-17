@@ -281,7 +281,9 @@
 
         const meta = document.createElement("div");
         meta.className = "meta";
-        meta.textContent = `${formatDate(upload.timestamp)} \u2022 ${upload.files.length} file(s)`;
+        let metaText = `${formatDate(upload.timestamp)} \u2022 ${upload.files.length} file(s)`;
+        if (upload.clientIP) metaText += ` \u2022 IP: ${upload.clientIP}`;
+        meta.textContent = metaText;
         card.appendChild(meta);
 
         if (upload.message) {

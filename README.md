@@ -62,9 +62,22 @@ cd worker
 npm install
 ```
 
-### Step 3: Set environment variables
+### Step 3: Deploy
 
-Set secrets via the Cloudflare dashboard (**Workers & Pages > your worker > Settings > Variables**) or via Wrangler:
+```bash
+cd worker
+npm run deploy
+```
+
+Wrangler deploys the Worker code **and** the static site files from `site/` in a single operation. This also creates the Worker on Cloudflare if it doesn't exist yet. Your app will be live at:
+
+```
+https://event-uploads.<your-subdomain>.workers.dev
+```
+
+### Step 4: Set environment variables
+
+Now that the Worker exists, set secrets via the Cloudflare dashboard (**Workers & Pages > your worker > Settings > Variables**) or via Wrangler:
 
 ```bash
 # Required — admin API access token
@@ -78,19 +91,6 @@ wrangler secret put INTRO_TEXT
 
 # Optional — passcode users must enter to upload
 wrangler secret put EVENT_CODE
-```
-
-### Step 4: Deploy
-
-```bash
-cd worker
-npm run deploy
-```
-
-That's it. Wrangler deploys the Worker code **and** the static site files from `site/` in a single operation. Your app will be live at:
-
-```
-https://event-uploads.<your-subdomain>.workers.dev
 ```
 
 ### Step 5: Custom domain (optional)
@@ -121,6 +121,14 @@ npm run dev
 
 Then open http://localhost:8787 for the upload page and http://localhost:8787/admin.html for the admin dashboard.
 
+## Security
+
+- **IP rate limiting**: Each IP can complete up to 10 upload sessions per day (configurable via `UPLOADS_PER_IP_PER_DAY`). Prevents abuse as a file dropbox.
+- **Per-session file cap**: Max 20 files per upload batch.
+- **File size cap**: Max 100MB per file.
+- **Client IP logging**: Stored in upload metadata and visible in the admin dashboard for audit.
+- **Path validation**: Rejects upload keys with path traversal (`..`).
+
 ## Environment variables
 
 | Variable | Required | Description |
@@ -129,6 +137,7 @@ Then open http://localhost:8787 for the upload page and http://localhost:8787/ad
 | `EVENT_NAME` | Yes | Display name shown as page heading |
 | `INTRO_TEXT` | No | Subtitle text below the heading |
 | `EVENT_CODE` | No | Passcode users must enter to upload |
+| `UPLOADS_PER_IP_PER_DAY` | No | Max upload sessions per IP per day (default: 10) |
 
 ## API Routes
 
