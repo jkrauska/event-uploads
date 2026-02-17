@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Admin &mdash; Event Uploads</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f5f5f5;
+      color: #333;
+      padding: 2rem 1rem;
+    }
+
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+    }
+
+    h1 { font-size: 1.5rem; margin-bottom: 1rem; }
+
+    .auth-form {
+      background: #fff;
+      padding: 1.5rem;
+      border-radius: 10px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+      margin-bottom: 1.5rem;
+      display: flex;
+      gap: 0.75rem;
+      align-items: end;
+    }
+
+    .auth-form label {
+      font-weight: 600;
+      font-size: 0.85rem;
+      display: block;
+      margin-bottom: 0.25rem;
+    }
+
+    .auth-form input {
+      padding: 0.5rem 0.75rem;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      font-size: 0.95rem;
+      width: 280px;
+    }
+
+    .auth-form button {
+      padding: 0.5rem 1.25rem;
+      background: #4a90d9;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-size: 0.95rem;
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    .auth-form button:hover { background: #3a7bc8; }
+
+    #error {
+      color: #d9534f;
+      font-weight: 600;
+      margin-bottom: 1rem;
+    }
+
+    .summary {
+      background: #fff;
+      padding: 1rem 1.5rem;
+      border-radius: 10px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+      margin-bottom: 1.5rem;
+      font-size: 0.95rem;
+      color: #666;
+    }
+
+    .upload-card {
+      background: #fff;
+      border-radius: 10px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+      padding: 1.25rem 1.5rem;
+      margin-bottom: 1rem;
+    }
+
+    .upload-card h3 {
+      font-size: 1.05rem;
+      margin-bottom: 0.15rem;
+    }
+
+    .upload-card .meta {
+      font-size: 0.8rem;
+      color: #999;
+      margin-bottom: 0.5rem;
+    }
+
+    .upload-card .msg {
+      font-style: italic;
+      color: #555;
+      margin-bottom: 0.5rem;
+      font-size: 0.9rem;
+    }
+
+    .file-list {
+      list-style: none;
+      padding: 0;
+    }
+
+    .file-list li {
+      padding: 0.3rem 0;
+      font-size: 0.85rem;
+      border-bottom: 1px solid #f0f0f0;
+    }
+
+    .file-list li:last-child { border-bottom: none; }
+
+    .file-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      cursor: pointer;
+    }
+
+    .file-row:hover .file-name { text-decoration: underline; }
+
+    .file-name {
+      color: #4a90d9;
+      font-weight: 500;
+    }
+
+    .file-size {
+      color: #999;
+      font-size: 0.8rem;
+    }
+
+    .preview {
+      margin-top: 0.5rem;
+      margin-bottom: 0.25rem;
+      text-align: center;
+    }
+
+    .preview img {
+      max-width: 100%;
+      max-height: 400px;
+      border-radius: 6px;
+      border: 1px solid #e0e0e0;
+    }
+
+    .preview video {
+      max-width: 100%;
+      max-height: 400px;
+      border-radius: 6px;
+      border: 1px solid #e0e0e0;
+    }
+
+    .preview .download-btn {
+      display: inline-block;
+      margin-top: 0.4rem;
+      padding: 0.3rem 0.75rem;
+      background: #4a90d9;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      font-size: 0.8rem;
+      cursor: pointer;
+      text-decoration: none;
+    }
+
+    .preview .download-btn:hover { background: #3a7bc8; }
+
+    .preview .loading {
+      color: #999;
+      font-size: 0.85rem;
+      padding: 1rem 0;
+    }
+
+    .empty {
+      text-align: center;
+      color: #999;
+      padding: 3rem;
+      font-size: 1.1rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Event Uploads &mdash; Admin</h1>
+
+    <div class="auth-form" id="authForm">
+      <div>
+        <label for="token">Admin Token</label>
+        <input type="password" id="token" placeholder="Enter admin token" />
+      </div>
+      <button id="loadBtn">Load</button>
+    </div>
+
+    <div id="error"></div>
+    <div id="content"></div>
+  </div>
+
+<script>
+  const API_BASE = "/api";
+
+  const tokenInput = document.getElementById("token");
+  const loadBtn    = document.getElementById("loadBtn");
+  const errorEl    = document.getElementById("error");
+  const contentEl  = document.getElementById("content");
+
+  function formatBytes(bytes) {
+    if (bytes < 1024) return bytes + " B";
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+    return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+  }
+
+  function formatDate(iso) {
+    const d = new Date(iso);
+    return d.toLocaleString();
+  }
+
+  function isImage(type) {
+    return type && type.startsWith("image/");
+  }
+
+  function isVideo(type) {
+    return type && type.startsWith("video/");
+  }
+
+  loadBtn.onclick = async () => {
+    const token = tokenInput.value.trim();
+    if (!token) { errorEl.textContent = "Enter a token"; return; }
+
+    errorEl.textContent = "";
+    contentEl.innerHTML = "";
+    loadBtn.textContent = "Loading\u2026";
+    loadBtn.disabled = true;
+
+    try {
+      const resp = await fetch(`${API_BASE}/admin/list`, {
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        errorEl.textContent = data.error || "Failed to load";
+        loadBtn.textContent = "Load";
+        loadBtn.disabled = false;
+        return;
+      }
+
+      const { uploads, count } = await resp.json();
+
+      window._adminToken = token;
+
+      const totalFiles = uploads.reduce((sum, u) => sum + u.files.length, 0);
+      const totalSize  = uploads.reduce(
+        (sum, u) => sum + u.files.reduce((s, f) => s + f.size, 0), 0
+      );
+
+      contentEl.innerHTML = "";
+
+      const summary = document.createElement("div");
+      summary.className = "summary";
+      summary.textContent = `${count} upload(s), ${totalFiles} file(s), ${formatBytes(totalSize)} total`;
+      contentEl.appendChild(summary);
+
+      if (uploads.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "No uploads yet.";
+        contentEl.appendChild(empty);
+      }
+
+      for (const upload of uploads) {
+        const card = document.createElement("div");
+        card.className = "upload-card";
+
+        const h3 = document.createElement("h3");
+        h3.textContent = upload.name;
+        card.appendChild(h3);
+
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = `${formatDate(upload.timestamp)} \u2022 ${upload.files.length} file(s)`;
+        card.appendChild(meta);
+
+        if (upload.message) {
+          const msg = document.createElement("div");
+          msg.className = "msg";
+          msg.textContent = `\u201C${upload.message}\u201D`;
+          card.appendChild(msg);
+        }
+
+        const ul = document.createElement("ul");
+        ul.className = "file-list";
+
+        for (const file of upload.files) {
+          const li = document.createElement("li");
+
+          const row = document.createElement("div");
+          row.className = "file-row";
+
+          const nameSpan = document.createElement("span");
+          nameSpan.className = "file-name";
+          nameSpan.textContent = file.filename;
+
+          const sizeSpan = document.createElement("span");
+          sizeSpan.className = "file-size";
+          sizeSpan.textContent = formatBytes(file.size);
+
+          row.appendChild(nameSpan);
+          row.appendChild(sizeSpan);
+          li.appendChild(row);
+
+          // Preview container (toggled on click)
+          const previewDiv = document.createElement("div");
+          previewDiv.className = "preview";
+          previewDiv.style.display = "none";
+          li.appendChild(previewDiv);
+
+          row.onclick = () => togglePreview(file, previewDiv, token);
+
+          ul.appendChild(li);
+        }
+
+        card.appendChild(ul);
+        contentEl.appendChild(card);
+      }
+
+      loadBtn.textContent = "Refresh";
+      loadBtn.disabled = false;
+
+    } catch (e) {
+      errorEl.textContent = "Network error";
+      loadBtn.textContent = "Load";
+      loadBtn.disabled = false;
+    }
+  };
+
+  async function togglePreview(file, container, token) {
+    // Toggle off if already showing
+    if (container.style.display !== "none") {
+      container.style.display = "none";
+      return;
+    }
+
+    container.style.display = "block";
+
+    // If already loaded, just show
+    if (container.dataset.loaded) return;
+
+    container.innerHTML = '<div class="loading">Loading preview\u2026</div>';
+
+    try {
+      const resp = await fetch(`${API_BASE}/admin/file/${encodeURIComponent(file.key)}`, {
+        headers: { "Authorization": `Bearer ${token}` }
+      });
+
+      if (!resp.ok) {
+        container.innerHTML = '<div class="loading">Failed to load preview</div>';
+        return;
+      }
+
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+
+      container.innerHTML = "";
+
+      if (isImage(file.type)) {
+        const img = document.createElement("img");
+        img.src = url;
+        img.alt = file.filename;
+        container.appendChild(img);
+      } else if (isVideo(file.type)) {
+        const video = document.createElement("video");
+        video.src = url;
+        video.controls = true;
+        video.preload = "metadata";
+        container.appendChild(video);
+      } else {
+        container.innerHTML = '<div class="loading">No preview available</div>';
+      }
+
+      // Download button
+      const btn = document.createElement("button");
+      btn.className = "download-btn";
+      btn.textContent = "Download";
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = file.filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      };
+      container.appendChild(document.createElement("br"));
+      container.appendChild(btn);
+
+      container.dataset.loaded = "true";
+
+    } catch (e) {
+      container.innerHTML = '<div class="loading">Network error loading preview</div>';
+    }
+  }
+
+  tokenInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") loadBtn.click();
+  });
+</script>
+</body>
+</html>

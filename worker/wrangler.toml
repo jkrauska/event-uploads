@@ -1,0 +1,29 @@
+name = "event-uploads"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+
+# Static site files served alongside the Worker
+[assets]
+directory = "../site"
+binding = "ASSETS"
+run_worker_first = ["/api/*"]
+
+[vars]
+# EVENT_NAME = ""  # Display name for the event — shown as page heading
+# INTRO_TEXT = ""  # Subtitle text below the heading
+# EVENT_CODE = ""  # Optional passcode for uploads — set in dashboard or .dev.vars
+
+# R2 bucket binding
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "event-uploads-media"
+
+# KV namespace binding (create via `wrangler kv namespace create EVENT_META`)
+[[kv_namespaces]]
+binding = "META"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+# For local dev, create a .dev.vars file:
+#   ADMIN_TOKEN=supersecret
+#   EVENT_NAME="My Event"
+#   INTRO_TEXT="Upload your photos!"

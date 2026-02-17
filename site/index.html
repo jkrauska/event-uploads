@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Upload Photos &amp; Videos</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f5f5f5;
+      color: #333;
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      padding: 2rem 1rem;
+    }
+
+    .container {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+      padding: 2rem;
+      max-width: 500px;
+      width: 100%;
+      align-self: flex-start;
+    }
+
+    h1 {
+      font-size: 1.8rem;
+      font-weight: 700;
+      margin-bottom: 0.5rem;
+      color: #222;
+    }
+
+    .subtitle {
+      color: #555;
+      margin-bottom: 1.5rem;
+      font-size: 1.05rem;
+      line-height: 1.4;
+    }
+
+    label {
+      display: block;
+      font-weight: 600;
+      margin-bottom: 0.25rem;
+      font-size: 0.9rem;
+    }
+
+    input[type="text"],
+    textarea {
+      width: 100%;
+      padding: 0.6rem 0.75rem;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      font-size: 1rem;
+      margin-bottom: 1rem;
+      font-family: inherit;
+    }
+
+    textarea {
+      resize: vertical;
+      min-height: 60px;
+    }
+
+    input[type="text"]:focus,
+    textarea:focus {
+      outline: none;
+      border-color: #4a90d9;
+      box-shadow: 0 0 0 2px rgba(74, 144, 217, 0.2);
+    }
+
+    .file-input-wrapper {
+      margin-bottom: 1rem;
+    }
+
+    input[type="file"] {
+      width: 100%;
+      padding: 0.5rem;
+      border: 2px dashed #ccc;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.9rem;
+    }
+
+    input[type="file"]:hover {
+      border-color: #4a90d9;
+    }
+
+    .code-group {
+      /* Hidden by default; shown via JS if EVENT_CODE is required */
+    }
+
+    button {
+      width: 100%;
+      padding: 0.75rem;
+      background: #4a90d9;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-size: 1.05rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    button:hover { background: #3a7bc8; }
+    button:disabled {
+      background: #a0c4e8;
+      cursor: not-allowed;
+    }
+
+    progress {
+      width: 100%;
+      height: 8px;
+      border-radius: 4px;
+      margin-top: 1rem;
+      appearance: none;
+      -webkit-appearance: none;
+    }
+
+    progress::-webkit-progress-bar {
+      background: #e0e0e0;
+      border-radius: 4px;
+    }
+
+    progress::-webkit-progress-value {
+      background: #4a90d9;
+      border-radius: 4px;
+    }
+
+    #status {
+      margin-top: 0.75rem;
+      font-weight: 600;
+      font-size: 0.95rem;
+      min-height: 1.4em;
+    }
+
+    #status.err { color: #d9534f; }
+    #status.ok  { color: #5cb85c; }
+
+    #detail {
+      color: #666;
+      font-size: 0.85rem;
+      margin-top: 0.25rem;
+    }
+
+    .footer {
+      text-align: center;
+      color: #aaa;
+      font-size: 0.8rem;
+      margin-top: 1.5rem;
+      padding-top: 1rem;
+      border-top: 1px solid #e0e0e0;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Upload Photos &amp; Videos</h1>
+    <p class="subtitle">Share your photos and videos to help us prepare for the event.</p>
+
+    <label for="name">Your Name</label>
+    <input type="text" id="name" placeholder="e.g. Judy Smith" autocomplete="name" />
+
+    <label for="message">Message <span style="font-weight:normal;color:#999">(optional)</span></label>
+    <textarea id="message" placeholder="A note about your photos or video…"></textarea>
+
+    <div class="code-group" id="codeGroup" style="display:none">
+      <label for="code">Event Code</label>
+      <input type="text" id="code" placeholder="Enter event code" autocomplete="off" />
+    </div>
+
+    <div class="file-input-wrapper">
+      <label for="files">Files</label>
+      <input type="file" id="files" multiple accept="image/*,video/*" />
+    </div>
+
+    <button id="uploadBtn">Upload</button>
+
+    <progress id="prog" value="0" max="100" style="display:none"></progress>
+    <div id="status"></div>
+    <div id="detail"></div>
+
+    <div class="footer" id="footer"></div>
+  </div>
+
+<script>
+  const API_BASE = "/api";
+
+  const uploadBtn = document.getElementById("uploadBtn");
+  const statusEl  = document.getElementById("status");
+  const detailEl  = document.getElementById("detail");
+  const prog      = document.getElementById("prog");
+
+  // Fetch event config from Worker and populate page
+  (async () => {
+    try {
+      const resp = await fetch(`${API_BASE}/config`);
+      if (resp.ok) {
+        const cfg = await resp.json();
+        const name = cfg.eventName || "Event";
+        document.title = `${name} — Upload Photos & Videos`;
+        document.querySelector("h1").textContent = name;
+        if (cfg.introText) {
+          document.querySelector(".subtitle").textContent = cfg.introText;
+        }
+        if (cfg.footerText) {
+          document.getElementById("footer").textContent = cfg.footerText;
+        }
+        if (cfg.requireCode) {
+          document.getElementById("codeGroup").style.display = "block";
+        }
+      }
+    } catch (e) {
+      // Config unavailable (e.g. no Worker running) — keep defaults
+    }
+  })();
+
+  function setStatus(msg, cls) {
+    statusEl.textContent = msg;
+    statusEl.className = cls || "";
+  }
+
+  uploadBtn.onclick = async () => {
+    const name    = document.getElementById("name").value.trim();
+    const message = document.getElementById("message").value.trim();
+    const code    = document.getElementById("code").value.trim();
+    const filesInput = document.getElementById("files");
+    const files   = Array.from(filesInput.files || []);
+
+    if (!name) { setStatus("Please enter your name", "err"); return; }
+    if (!files.length) { setStatus("Please select at least one file", "err"); return; }
+
+    uploadBtn.disabled = true;
+    prog.style.display = "block";
+    prog.value = 0;
+    setStatus("Preparing upload\u2026");
+    detailEl.textContent = "";
+
+    // 1) Ask Worker for upload keys
+    const meta = {
+      name,
+      message: message || undefined,
+      code: code || undefined,
+      files: files.map(f => ({ filename: f.name, type: f.type, size: f.size }))
+    };
+
+    let createResp;
+    try {
+      createResp = await fetch(`${API_BASE}/create-upload`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(meta)
+      });
+    } catch (e) {
+      setStatus("Network error \u2014 please check your connection", "err");
+      uploadBtn.disabled = false;
+      return;
+    }
+
+    if (!createResp.ok) {
+      const data = await createResp.json().catch(() => ({}));
+      setStatus(data.error || "Upload setup failed", "err");
+      uploadBtn.disabled = false;
+      return;
+    }
+
+    const { uploadId, uploads } = await createResp.json();
+
+    // 2) Upload each file to R2 via the Worker
+    const total = uploads.length;
+
+    for (let i = 0; i < uploads.length; i++) {
+      const u    = uploads[i];
+      const file = files[i];
+
+      setStatus(`Uploading ${file.name} (${i + 1}/${total})`);
+
+      try {
+        const res = await fetch(u.url, {
+          method: "PUT",
+          headers: { "content-type": file.type || "application/octet-stream" },
+          body: file
+        });
+
+        if (!res.ok) {
+          setStatus(`Failed uploading ${file.name}`, "err");
+          uploadBtn.disabled = false;
+          return;
+        }
+      } catch (e) {
+        setStatus(`Network error uploading ${file.name}`, "err");
+        uploadBtn.disabled = false;
+        return;
+      }
+
+      prog.value = Math.round(((i + 1) / total) * 100);
+    }
+
+    // 3) Finalize — write metadata to KV
+    const completeResp = await fetch(`${API_BASE}/complete`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        uploadId,
+        name,
+        message: message || undefined,
+        code: code || undefined,
+        uploads: uploads.map((u, i) => ({
+          key: u.key,
+          filename: files[i].name,
+          type: files[i].type,
+          size: files[i].size
+        }))
+      })
+    });
+
+    if (!completeResp.ok) {
+      setStatus("Upload finished, but finalization failed", "err");
+      uploadBtn.disabled = false;
+      return;
+    }
+
+    prog.value = 100;
+    setStatus("Thank you! Your files were uploaded successfully.", "ok");
+    detailEl.textContent = "You can safely close this page or upload more.";
+    filesInput.value = "";
+    uploadBtn.disabled = false;
+  };
+</script>
+</body>
+</html>
